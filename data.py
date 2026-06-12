@@ -30,7 +30,24 @@ GUEST_MAP = {
 }
 
 # Handles propios del canal (para no confundirlos con invitados)
-_CANAL_HANDLES = {"crudoyqueso", "crudoyquesopodcast", "tomperez", "thiago"}
+_CANAL_HANDLES = {"crudoyqueso", "crudoyquesopodcast", "tomperez", "thiago", "thiagoperss", "tomaspers"}
+
+# Mapa opcional: handle de Instagram (en minúsculas, sin @) -> nombre lindo para mostrar.
+# Si un invitado nuevo no está acá, se muestra como "@su_handle" automáticamente
+# (no se mezcla nunca con "Solo (sin invitado)").
+HANDLE_DISPLAY_NAMES = {
+    "sarcaone":          "SarcaOne",
+    "roas.marketing":    "Roas Marketing",
+    "silviavales":       "Silvia Vales",
+    "juanmassola":       "Juan Massola",
+    "nahue_leon_":       "Nahuel",
+    "bautiaschiero":     "Bauti Aschiero",
+    "abrakadabra.ar":    "Barbie",
+}
+
+# Sección de la descripción donde YouTube siempre pone el Instagram del invitado
+_GUEST_SECTION_RE = re.compile(r"sobre el invitado[:\s]*(.*?)(?:⸻|sobre el podcast|$)", re.IGNORECASE | re.DOTALL)
+_HANDLE_RE = re.compile(r"instagram\s*:?\s*[/@]*\s*([a-z0-9_.]+)", re.IGNORECASE)
 
 # ── Umbrales de clasificación de formato (en segundos) ─────────────────────────
 SHORT_MAX_SEC   = 70      # <= 70s (o con #shorts) => Short
@@ -80,9 +97,27 @@ def classify_video_type(video: dict) -> str:
 
 
 def extract_guest(title: str, description: str = "") -> str:
-    """Busca invitados por sus handles de Instagram en título + descripción completa."""
-    # Buscar en título + descripción completa
-    text = (title + " " + description).lower()
+    """Detecta al invitado automáticamente.
+
+    1) Busca la sección "SOBRE EL INVITADO" de la descripción (siempre presente
+       cuando hay invitado) y extrae su handle de Instagram. Si el handle tiene
+       un nombre lindo asignado en HANDLE_DISPLAY_NAMES lo usa, sino muestra
+       "@handle" directamente -> nunca se mezcla con "Solo (sin invitado)",
+       aunque sea un invitado nuevo que todavía no fue mapeado a mano.
+    2) Si esa sección no existe (videos viejos con otro formato), cae al
+       GUEST_MAP por palabras clave como respaldo.
+    """
+    desc = description or ""
+
+    section_match = _GUEST_SECTION_RE.search(desc)
+    if section_match:
+        handle_match = _HANDLE_RE.search(section_match.group(1))
+        if handle_match:
+            handle = handle_match.group(1).strip(".").lower()
+            if handle and handle not in _CANAL_HANDLES:
+                return HANDLE_DISPLAY_NAMES.get(handle, f"@{handle}")
+
+    text = (title + " " + desc).lower()
     for guest_name, keywords in GUEST_MAP.items():
         for kw in keywords:
             if kw in text:
