@@ -32,6 +32,19 @@ GUEST_MAP = {
 # Handles propios del canal (para no confundirlos con invitados)
 _CANAL_HANDLES = {"crudoyqueso", "crudoyquesopodcast", "tomperez", "thiago"}
 
+# ── Umbrales de clasificación de formato (en segundos) ─────────────────────────
+SHORT_MAX_SEC   = 70      # <= 70s (o con #shorts) => Short
+COMPLETO_MIN_SEC = 3600   # > 60 min => Completo (capítulo entero)
+# Entre SHORT_MAX_SEC y COMPLETO_MIN_SEC => Mediano (clips de 3-25 min típicamente)
+
+TIPO_ORDEN = ["Short", "Mediano", "Completo"]
+TIPO_COLORS = {
+    "Short":    "#FF0050",
+    "Mediano":  "#FF8C00",
+    "Completo": "#CC0000",
+    "Total":    "#333333",
+}
+
 
 def parse_duration(duration: str) -> int:
     match = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", duration or "PT0S")
@@ -43,15 +56,27 @@ def parse_duration(duration: str) -> int:
     return h * 3600 + m * 60 + s
 
 
-def is_short_video(video: dict) -> bool:
-    """Shorts = duración <= 70 segundos o tiene #shorts en título/descripción."""
+def classify_video_type(video: dict) -> str:
+    """Clasifica el video en 3 formatos:
+    - Short: duración <= 70s o tiene #shorts en título/descripción
+    - Mediano: clips de 70s a 60 min (lo típico: 3-25 min)
+    - Completo: capítulos enteros de más de 60 min
+    """
     cd  = video.get("contentDetails", {})
     sn  = video.get("snippet", {})
     dur = parse_duration(cd.get("duration", "PT0S"))
-    if dur <= 70:
-        return True
+
+    if dur <= SHORT_MAX_SEC:
+        return "Short"
+
     text = (sn.get("title", "") + sn.get("description", "")[:300]).lower()
-    return "#short" in text
+    if "#short" in text:
+        return "Short"
+
+    if dur > COMPLETO_MIN_SEC:
+        return "Completo"
+
+    return "Mediano"
 
 
 def extract_guest(title: str, description: str = "") -> str:
@@ -101,7 +126,8 @@ def videos_to_df(videos: list) -> pd.DataFrame:
         desc  = sn.get("description", "")
         views = int(st.get("viewCount", 0))
         likes = int(st.get("likeCount", 0))
-        short = is_short_video(v)
+        tipo  = classify_video_type(v)
+        dur_sec = parse_duration(cd.get("duration", "PT0S"))
         rows.append({
             "id":           v["id"],
             "title":        title,
@@ -110,10 +136,10 @@ def videos_to_df(videos: list) -> pd.DataFrame:
             "views":        views,
             "likes":        likes,
             "comments":     int(st.get("commentCount", 0)),
-            "duration_sec": parse_duration(cd.get("duration", "PT0S")),
-            "duration_min": round(parse_duration(cd.get("duration", "PT0S")) / 60, 1),
-            "is_short":     short,
-            "tipo":         "Short" if short else "Largo",
+            "duration_sec": dur_sec,
+            "duration_min": round(dur_sec / 60, 1),
+            "tipo":         tipo,
+            "is_short":     tipo == "Short",  # compat
             "guest":        extract_guest(title, desc),
             "like_rate":    round(likes / max(views, 1) * 100, 2),
             "thumbnail":    sn.get("thumbnails", {}).get("medium", {}).get("url", ""),
@@ -170,24 +196,24 @@ def fetch_video_analytics(analytics, start: str, end: str):
 
 
 def build_guest_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Resumen por invitado, desglosado por los 3 formatos (Short/Mediano/Completo)."""
     if df.empty:
         return pd.DataFrame()
     result = []
     for guest in df["guest"].unique():
-        gdf    = df[df["guest"] == guest]
-        shorts = gdf[gdf["is_short"]]
-        largos = gdf[~gdf["is_short"]]
-        result.append({
+        gdf = df[df["guest"] == guest]
+        row = {
             "Invitado":       guest,
             "Videos":         len(gdf),
             "Vistas totales": int(gdf["views"].sum()),
-            "Vistas Shorts":  int(shorts["views"].sum()),
-            "Vistas Largos":  int(largos["views"].sum()),
             "Likes totales":  int(gdf["likes"].sum()),
             "Comentarios":    int(gdf["comments"].sum()),
-            "Shorts":         len(shorts),
-            "Largos":         len(largos),
-        })
+        }
+        for tipo in TIPO_ORDEN:
+            tdf = gdf[gdf["tipo"] == tipo]
+            row[f"Videos {tipo}"] = len(tdf)
+            row[f"Vistas {tipo}"] = int(tdf["views"].sum())
+        result.append(row)
     return pd.DataFrame(result).sort_values("Vistas totales", ascending=False)
 
 

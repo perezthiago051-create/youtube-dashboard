@@ -9,6 +9,7 @@ from data import (
     fetch_all_videos, videos_to_df,
     fetch_channel_analytics, fetch_video_analytics,
     fetch_retention_curve, build_guest_summary,
+    TIPO_ORDEN, TIPO_COLORS,
 )
 
 st.set_page_config(page_title="Crudo y Queso — Dashboard", layout="wide", page_icon="▶️")
@@ -18,11 +19,15 @@ st.markdown("""
     .metric-card {background:#f8f9fa;border-radius:12px;padding:16px;text-align:center;}
     .rec-card {background:#fff3cd;border-left:4px solid #ffc107;padding:12px;border-radius:4px;margin:8px 0;}
     .rec-good {background:#d4edda;border-left:4px solid #28a745;padding:12px;border-radius:4px;margin:8px 0;}
+    .rec-bad {background:#f8d7da;border-left:4px solid #dc3545;padding:12px;border-radius:4px;margin:8px 0;}
     .vid-card {border:1px solid #e0e0e0;border-radius:10px;padding:10px;text-align:center;background:#fff;}
     .vid-title {font-size:0.8rem;font-weight:600;margin-top:6px;line-height:1.3;}
     .vid-stat {font-size:0.75rem;color:#666;margin:2px 0;}
+    .accion-card {background:#1e1e2f;border:1px solid #444;border-left:4px solid #FF0050;padding:14px 16px;border-radius:6px;margin:10px 0;}
 </style>
 """, unsafe_allow_html=True)
+
+TIPO_ICONS = {"Short": "🎬", "Mediano": "🎯", "Completo": "📹"}
 
 
 def video_cards(df_cards: "pd.DataFrame", n_cols: int = 4, max_videos: int = 12):
@@ -40,13 +45,30 @@ def video_cards(df_cards: "pd.DataFrame", n_cols: int = 4, max_videos: int = 12)
                 likes = v.get("likes", 0)
                 guest = v.get("guest", "")
                 title = v.get("title", "")
-                short_label = "🎬 Short" if v.get("is_short") else "📹 Largo"
+                tipo = v.get("tipo", "")
+                tipo_label = f"{TIPO_ICONS.get(tipo,'')} {tipo}"
                 st.markdown(f"""
 <div class="vid-title">{title[:55]}{'...' if len(title)>55 else ''}</div>
 <div class="vid-stat">👤 {guest}</div>
 <div class="vid-stat">👁️ {int(views):,} vistas &nbsp; ❤️ {int(likes):,}</div>
-<div class="vid-stat">{short_label}</div>
+<div class="vid-stat">{tipo_label}</div>
 """, unsafe_allow_html=True)
+
+
+def semaforo(valor, promedio, invertido=False):
+    """Devuelve emoji semáforo comparando valor contra el promedio del canal."""
+    if promedio <= 0:
+        return "⚪"
+    ratio = valor / promedio
+    if invertido:
+        ratio = 1 / ratio if ratio > 0 else 0
+    if ratio >= 1.1:
+        return "🟢"
+    elif ratio >= 0.8:
+        return "🟡"
+    else:
+        return "🔴"
+
 
 # ── Autenticación ─────────────────────────────────────────────────────────────
 @st.cache_resource(show_spinner="Conectando con YouTube...")
@@ -93,44 +115,52 @@ dias = periodo_opciones[periodo_sel]
 end_date   = date.today()
 start_date = date.today() - timedelta(days=dias) if dias < 9999 else date(2000, 1, 1)
 
-video_type = st.sidebar.radio("Tipo de video", ["Todos", "Solo Shorts", "Solo largos"])
+video_type = st.sidebar.radio("Tipo de video", ["Todos", "Solo Shorts", "Solo Medianos", "Solo Completos"])
 
 st.sidebar.divider()
 if st.sidebar.button("🔄 Recargar datos del canal"):
     st.cache_data.clear()
     st.rerun()
 
+st.sidebar.caption("Los datos se actualizan automáticamente 1 vez por día. Usá este botón para forzar una actualización ahora.")
+
 # ── Filtrar ───────────────────────────────────────────────────────────────────
 df = df_all.copy()
 if not df.empty:
     df = df[(df["published_at"].dt.date >= start_date) & (df["published_at"].dt.date <= end_date)]
     if video_type == "Solo Shorts":
-        df = df[df["is_short"]]
-    elif video_type == "Solo largos":
-        df = df[~df["is_short"]]
+        df = df[df["tipo"] == "Short"]
+    elif video_type == "Solo Medianos":
+        df = df[df["tipo"] == "Mediano"]
+    elif video_type == "Solo Completos":
+        df = df[df["tipo"] == "Completo"]
 
 # ── Header ────────────────────────────────────────────────────────────────────
 st.title(f"▶️  {ch_name} — Dashboard")
+st.caption("🎬 Shorts (≤70 seg) · 🎯 Medianos (clips de 1-60 min) · 📹 Completos (capítulos +1 hora)")
 
-c1, c2, c3, c4, c5 = st.columns(5)
+c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("Suscriptores", f"{int(ch_st.get('subscriberCount', 0)):,}")
 c2.metric("Videos totales", f"{int(ch_st.get('videoCount', 0)):,}")
 c3.metric("Vistas totales", f"{int(ch_st.get('viewCount', 0)):,}")
-shorts_count = df_all["is_short"].sum() if not df_all.empty else 0
-largos_count = (~df_all["is_short"]).sum() if not df_all.empty else 0
-c4.metric("Shorts", f"{shorts_count:,}")
-c5.metric("Videos largos", f"{largos_count:,}")
+counts_all = df_all["tipo"].value_counts() if not df_all.empty else pd.Series(dtype=int)
+c4.metric("🎬 Shorts", f"{counts_all.get('Short', 0):,}")
+c5.metric("🎯 Medianos", f"{counts_all.get('Mediano', 0):,}")
+c6.metric("📹 Completos", f"{counts_all.get('Completo', 0):,}")
 
 st.divider()
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
     "🏆 Invitados",
     "🎬 Shorts",
-    "📹 Videos Largos",
+    "🎯 Medianos",
+    "📹 Completos",
     "📈 Evolución",
     "🔁 Retención",
+    "🚦 Semáforo",
     "💡 Recomendaciones",
+    "✅ Plan de Acción",
     "🔧 Diagnóstico",
 ])
 
@@ -158,16 +188,15 @@ with tab1:
             orientation="h",
             color="Vistas totales",
             color_continuous_scale="Reds",
-            title="Vistas totales por invitado (Shorts + Largos)",
+            title="Vistas totales por invitado (Shorts + Medianos + Completos)",
         )
         fig_g.update_layout(yaxis={"categoryorder": "total ascending"}, height=500, coloraxis_showscale=False)
         st.plotly_chart(fig_g, use_container_width=True)
 
-        # Comparación Shorts vs Largos por invitado
+        # Comparación Shorts vs Medianos vs Completos por invitado
         top_guests = guest_df.head(10)["Invitado"].tolist()
         df_top = df[df["guest"].isin(top_guests)]
-        comp = df_top.groupby(["guest", "is_short"])["views"].sum().reset_index()
-        comp["tipo"] = comp["is_short"].map({True: "Shorts", False: "Largos"})
+        comp = df_top.groupby(["guest", "tipo"])["views"].sum().reset_index()
 
         fig_comp = px.bar(
             comp,
@@ -175,22 +204,29 @@ with tab1:
             y="views",
             color="tipo",
             barmode="group",
-            color_discrete_map={"Shorts": "#FF0050", "Largos": "#FF0000"},
-            labels={"guest": "Invitado", "views": "Vistas", "tipo": "Tipo"},
-            title="Top 10 invitados — Shorts vs Largos",
+            category_orders={"tipo": TIPO_ORDEN},
+            color_discrete_map=TIPO_COLORS,
+            labels={"guest": "Invitado", "views": "Vistas", "tipo": "Formato"},
+            title="Top 10 invitados — Shorts vs Medianos vs Completos",
         )
         fig_comp.update_layout(xaxis_tickangle=-30)
         st.plotly_chart(fig_comp, use_container_width=True)
 
         # Tabla completa
         st.subheader("Tabla detallada por invitado")
+        cols_tab = ["Invitado", "Videos", "Vistas totales",
+                     "Videos Short", "Vistas Short",
+                     "Videos Mediano", "Vistas Mediano",
+                     "Videos Completo", "Vistas Completo",
+                     "Likes totales", "Comentarios"]
         st.dataframe(
-            guest_df.style.format({
-                "Vistas totales": "{:,}",
-                "Vistas Shorts": "{:,}",
-                "Vistas Largos": "{:,}",
-                "Likes totales": "{:,}",
-                "Comentarios": "{:,}",
+            guest_df[cols_tab].rename(columns={
+                "Videos Short": "🎬 Videos", "Vistas Short": "🎬 Vistas",
+                "Videos Mediano": "🎯 Videos", "Vistas Mediano": "🎯 Vistas",
+                "Videos Completo": "📹 Videos", "Vistas Completo": "📹 Vistas",
+            }).style.format({
+                "Vistas totales": "{:,}", "🎬 Vistas": "{:,}", "🎯 Vistas": "{:,}", "📹 Vistas": "{:,}",
+                "Likes totales": "{:,}", "Comentarios": "{:,}",
             }),
             use_container_width=True,
             hide_index=True,
@@ -202,18 +238,17 @@ with tab1:
         inv_sel = st.selectbox("Invitado", invitados_lista)
         if inv_sel != "— Elegí un invitado —":
             df_inv = df[df["guest"] == inv_sel].sort_values("views", ascending=False)
-            df_inv_s = df_inv[df_inv["is_short"]]
-            df_inv_l = df_inv[~df_inv["is_short"]]
-            ia, ib, ic, id_ = st.columns(4)
+            ia, ib, ic, id_, ie = st.columns(5)
             ia.metric("Videos totales", len(df_inv))
             ib.metric("Vistas totales", f"{df_inv['views'].sum():,}")
-            ic.metric("Vistas Shorts", f"{df_inv_s['views'].sum():,}")
-            id_.metric("Vistas Largos", f"{df_inv_l['views'].sum():,}")
+            for col, tipo in zip([ic, id_, ie], TIPO_ORDEN):
+                sub = df_inv[df_inv["tipo"] == tipo]
+                col.metric(f"{TIPO_ICONS[tipo]} {tipo}", f"{sub['views'].sum():,}")
             video_cards(df_inv, n_cols=4, max_videos=16)
             with st.expander("Ver tabla completa"):
                 st.dataframe(
                     df_inv[["thumbnail","title","tipo","published_at","views","likes","comments","like_rate"]]
-                    .rename(columns={"thumbnail":"Miniatura","title":"Título","tipo":"Tipo",
+                    .rename(columns={"thumbnail":"Miniatura","title":"Título","tipo":"Formato",
                                      "published_at":"Publicado","views":"Vistas","likes":"Likes",
                                      "comments":"Comentarios","like_rate":"% Likes"}),
                     column_config={"Miniatura": st.column_config.ImageColumn("Miniatura", width="small")},
@@ -237,11 +272,11 @@ with tab1:
                 st.metric("Vistas totales de la búsqueda", f"{df_search['views'].sum():,}")
                 video_cards(df_search, n_cols=4, max_videos=12)
                 st.dataframe(
-                    df_search[["thumbnail", "title", "guest", "published_at", "views", "likes", "comments", "is_short"]]
+                    df_search[["thumbnail", "title", "guest", "published_at", "views", "likes", "comments", "tipo"]]
                     .rename(columns={
                         "thumbnail": "Miniatura", "title": "Título", "guest": "Invitado",
                         "published_at": "Publicado", "views": "Vistas", "likes": "Likes",
-                        "comments": "Comentarios", "is_short": "Short",
+                        "comments": "Comentarios", "tipo": "Formato",
                     }),
                     column_config={"Miniatura": st.column_config.ImageColumn("Miniatura", width="small")},
                     use_container_width=True, hide_index=True,
@@ -251,8 +286,9 @@ with tab1:
 # TAB 2 — SHORTS
 # ════════════════════════════════════════════════════════════════════════════
 with tab2:
-    df_shorts = df[df["is_short"]] if not df.empty else pd.DataFrame()
-    st.subheader(f"Análisis de Shorts ({len(df_shorts)} en el período)")
+    df_shorts = df[df["tipo"] == "Short"] if not df.empty else pd.DataFrame()
+    st.subheader(f"🎬 Análisis de Shorts ({len(df_shorts)} en el período)")
+    st.caption("Videos de hasta 70 segundos. Lo único que importa: el gancho de los primeros 1-3 segundos.")
 
     if df_shorts.empty:
         st.info("Sin Shorts en el período seleccionado.")
@@ -262,7 +298,6 @@ with tab2:
         s2.metric("Promedio de vistas", f"{int(df_shorts['views'].mean()):,}")
         s3.metric("Mejor Short", f"{df_shorts['views'].max():,} vistas")
 
-        # Top Shorts con miniaturas
         st.markdown("#### Top Shorts")
         video_cards(df_shorts.sort_values("views", ascending=False), n_cols=4, max_videos=8)
         st.divider()
@@ -281,7 +316,6 @@ with tab2:
         fig_s.update_layout(yaxis={"categoryorder": "total ascending"}, height=550, coloraxis_showscale=False)
         st.plotly_chart(fig_s, use_container_width=True)
 
-        # Shorts por invitado
         sg = df_shorts.groupby("guest").agg(
             videos=("id", "count"),
             vistas=("views", "sum"),
@@ -300,7 +334,6 @@ with tab2:
         fig_sg.update_layout(xaxis_tickangle=-30, coloraxis_showscale=False)
         st.plotly_chart(fig_sg, use_container_width=True)
 
-        # Likes rate de Shorts
         st.subheader("Shorts con mejor tasa de likes (engajamiento)")
         top_like = df_shorts[df_shorts["views"] >= 100].nlargest(15, "like_rate")
         fig_lr = px.bar(
@@ -316,7 +349,6 @@ with tab2:
         fig_lr.update_layout(yaxis={"categoryorder": "total ascending"}, height=450, coloraxis_showscale=False)
         st.plotly_chart(fig_lr, use_container_width=True)
 
-        # Tabla
         with st.expander("Ver todos los Shorts"):
             st.dataframe(
                 df_shorts[["title", "guest", "published_at", "views", "likes", "comments", "like_rate"]]
@@ -329,41 +361,125 @@ with tab2:
             )
 
 # ════════════════════════════════════════════════════════════════════════════
-# TAB 3 — VIDEOS LARGOS
+# TAB 3 — MEDIANOS
 # ════════════════════════════════════════════════════════════════════════════
 with tab3:
-    df_largos = df[~df["is_short"]] if not df.empty else pd.DataFrame()
-    st.subheader(f"Análisis de Videos Largos ({len(df_largos)} en el período)")
+    df_med = df[df["tipo"] == "Mediano"] if not df.empty else pd.DataFrame()
+    st.subheader(f"🎯 Análisis de Medianos ({len(df_med)} en el período)")
+    st.caption("Clips de 1 a 60 minutos (recortes de la charla, momentos puntuales).")
 
-    if df_largos.empty:
-        st.info("Sin videos largos en el período seleccionado.")
+    if df_med.empty:
+        st.info("Sin videos Medianos en el período seleccionado.")
     else:
-        l1, l2, l3 = st.columns(3)
-        l1.metric("Vistas totales", f"{df_largos['views'].sum():,}")
-        l2.metric("Promedio de vistas", f"{int(df_largos['views'].mean()):,}")
-        l3.metric("Duración promedio", f"{df_largos['duration_min'].mean():.0f} min")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Vistas totales", f"{df_med['views'].sum():,}")
+        m2.metric("Promedio de vistas", f"{int(df_med['views'].mean()):,}")
+        m3.metric("Duración promedio", f"{df_med['duration_min'].mean():.1f} min")
 
-        # Top largos con miniaturas
-        st.markdown("#### Top Videos Largos")
-        video_cards(df_largos.sort_values("views", ascending=False), n_cols=4, max_videos=8)
+        st.markdown("#### Top Medianos")
+        video_cards(df_med.sort_values("views", ascending=False), n_cols=4, max_videos=8)
         st.divider()
 
-        top_largos = df_largos.nlargest(20, "views")
+        top_med = df_med.nlargest(20, "views")
+        fig_m = px.bar(
+            top_med,
+            x="views",
+            y="title",
+            orientation="h",
+            color="views",
+            color_continuous_scale="Oranges",
+            title="Top 20 Medianos por vistas",
+            labels={"views": "Vistas", "title": ""},
+        )
+        fig_m.update_layout(yaxis={"categoryorder": "total ascending"}, height=550, coloraxis_showscale=False)
+        st.plotly_chart(fig_m, use_container_width=True)
+
+        # Retención (si hay datos de Analytics)
+        df_van_m, err_m = fetch_video_analytics(analytics, start_date.isoformat(), end_date.isoformat())
+        if not err_m and not df_van_m.empty:
+            df_merged_m = df_med.merge(df_van_m, on="id", how="left", suffixes=("", "_analytics"))
+            df_merged_m = df_merged_m.dropna(subset=["averageViewPercentage"])
+            if not df_merged_m.empty:
+                top_ret_m = df_merged_m.nlargest(15, "averageViewPercentage")
+                fig_ret_m = px.bar(
+                    top_ret_m,
+                    x="averageViewPercentage",
+                    y="title",
+                    orientation="h",
+                    color="averageViewPercentage",
+                    color_continuous_scale="Greens",
+                    title="Mejor retención promedio (%) — Medianos",
+                    labels={"averageViewPercentage": "% Retención", "title": ""},
+                )
+                fig_ret_m.update_layout(yaxis={"categoryorder": "total ascending"}, height=450, coloraxis_showscale=False)
+                st.plotly_chart(fig_ret_m, use_container_width=True)
+
+        mg = df_med.groupby("guest").agg(
+            videos=("id", "count"),
+            vistas=("views", "sum"),
+            likes=("likes", "sum"),
+        ).reset_index().sort_values("vistas", ascending=False)
+
+        fig_mg = px.bar(
+            mg.head(15),
+            x="guest",
+            y="vistas",
+            color="vistas",
+            color_continuous_scale="Oranges",
+            title="Vistas de Medianos por invitado",
+            labels={"guest": "Invitado", "vistas": "Vistas"},
+        )
+        fig_mg.update_layout(xaxis_tickangle=-30, coloraxis_showscale=False)
+        st.plotly_chart(fig_mg, use_container_width=True)
+
+        with st.expander("Ver todos los Medianos"):
+            st.dataframe(
+                df_med[["title", "guest", "published_at", "views", "likes", "comments", "duration_min", "like_rate"]]
+                .sort_values("views", ascending=False)
+                .rename(columns={
+                    "title": "Título", "guest": "Invitado", "published_at": "Publicado",
+                    "views": "Vistas", "likes": "Likes", "comments": "Comentarios",
+                    "duration_min": "Duración (min)", "like_rate": "% Likes",
+                }),
+                use_container_width=True, hide_index=True,
+            )
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 4 — COMPLETOS
+# ════════════════════════════════════════════════════════════════════════════
+with tab4:
+    df_comp = df[df["tipo"] == "Completo"] if not df.empty else pd.DataFrame()
+    st.subheader(f"📹 Análisis de Capítulos Completos ({len(df_comp)} en el período)")
+    st.caption("Episodios de más de 1 hora — la entrevista completa.")
+
+    if df_comp.empty:
+        st.info("Sin Capítulos Completos en el período seleccionado.")
+    else:
+        l1, l2, l3 = st.columns(3)
+        l1.metric("Vistas totales", f"{df_comp['views'].sum():,}")
+        l2.metric("Promedio de vistas", f"{int(df_comp['views'].mean()):,}")
+        l3.metric("Duración promedio", f"{df_comp['duration_min'].mean():.0f} min")
+
+        st.markdown("#### Top Capítulos Completos")
+        video_cards(df_comp.sort_values("views", ascending=False), n_cols=4, max_videos=8)
+        st.divider()
+
+        top_comp = df_comp.nlargest(20, "views")
         fig_l = px.bar(
-            top_largos,
+            top_comp,
             x="views",
             y="title",
             orientation="h",
             color="views",
             color_continuous_scale="Reds",
-            title="Top 20 Videos Largos por vistas",
+            title="Top Capítulos Completos por vistas",
             labels={"views": "Vistas", "title": ""},
         )
         fig_l.update_layout(yaxis={"categoryorder": "total ascending"}, height=550, coloraxis_showscale=False)
         st.plotly_chart(fig_l, use_container_width=True)
 
-        # Analytics por video (CTR y retención)
-        st.subheader("CTR y Retención por video (requiere Analytics API)")
+        # Analytics por video (retención)
+        st.subheader("Retención por capítulo (requiere Analytics API)")
         df_van, err = fetch_video_analytics(analytics, start_date.isoformat(), end_date.isoformat())
 
         if err:
@@ -371,14 +487,12 @@ with tab3:
         elif df_van.empty:
             st.info("No hay datos de Analytics para el período.")
         else:
-            # Merge con datos básicos
-            df_merged = df_largos.merge(df_van, on="id", how="left", suffixes=("", "_analytics"))
+            df_merged = df_comp.merge(df_van, on="id", how="left", suffixes=("", "_analytics"))
             df_merged = df_merged.dropna(subset=["averageViewPercentage"])
 
             if not df_merged.empty:
                 va1, va2 = st.columns(2)
 
-                # Retención promedio
                 top_ret = df_merged.nlargest(15, "averageViewPercentage")
                 fig_ret = px.bar(
                     top_ret,
@@ -393,7 +507,6 @@ with tab3:
                 fig_ret.update_layout(yaxis={"categoryorder": "total ascending"}, height=450, coloraxis_showscale=False)
                 va2.plotly_chart(fig_ret, use_container_width=True)
 
-                # Duración del video vs retención
                 df_scatter = df_merged.dropna(subset=["averageViewPercentage", "duration_min"]).copy()
                 size_col = "views_x" if "views_x" in df_scatter.columns else "views"
                 fig_scatter = px.scatter(
@@ -403,13 +516,12 @@ with tab3:
                     size=size_col,
                     color="guest",
                     hover_name="title",
-                    title="Duración del video vs % de retención (burbuja = vistas)",
+                    title="Duración vs % de retención (burbuja = vistas)",
                     labels={"duration_min": "Duración (min)", "averageViewPercentage": "Retención %", "guest": "Invitado"},
                 )
-                st.plotly_chart(fig_scatter, use_container_width=True)
+                va1.plotly_chart(fig_scatter, use_container_width=True)
 
-        # Largos por invitado
-        lg = df_largos.groupby("guest").agg(
+        lg = df_comp.groupby("guest").agg(
             videos=("id", "count"),
             vistas=("views", "sum"),
             likes=("likes", "sum"),
@@ -421,15 +533,15 @@ with tab3:
             y="vistas",
             color="vistas",
             color_continuous_scale="Reds",
-            title="Vistas de Videos Largos por invitado",
+            title="Vistas de Capítulos Completos por invitado",
             labels={"guest": "Invitado", "vistas": "Vistas"},
         )
         fig_lg.update_layout(xaxis_tickangle=-30, coloraxis_showscale=False)
         st.plotly_chart(fig_lg, use_container_width=True)
 
-        with st.expander("Ver todos los Videos Largos"):
+        with st.expander("Ver todos los Capítulos Completos"):
             st.dataframe(
-                df_largos[["title", "guest", "published_at", "views", "likes", "comments", "duration_min", "like_rate"]]
+                df_comp[["title", "guest", "published_at", "views", "likes", "comments", "duration_min", "like_rate"]]
                 .sort_values("views", ascending=False)
                 .rename(columns={
                     "title": "Título", "guest": "Invitado", "published_at": "Publicado",
@@ -440,44 +552,55 @@ with tab3:
             )
 
 # ════════════════════════════════════════════════════════════════════════════
-# TAB 4 — EVOLUCIÓN
+# TAB 5 — EVOLUCIÓN
 # ════════════════════════════════════════════════════════════════════════════
-with tab4:
+with tab5:
     st.subheader("Evolución temporal del canal")
 
     if not df.empty:
-        monthly_st = df.groupby(["month", "is_short"])["views"].sum().reset_index()
-        monthly_st["tipo"] = monthly_st["is_short"].map({True: "Shorts", False: "Largos"})
+        monthly_tipo = df.groupby(["month", "tipo"])["views"].sum().reset_index()
         monthly_total = df.groupby("month")["views"].sum().reset_index()
         monthly_total["tipo"] = "Total"
-        monthly_total["is_short"] = None
-        monthly_all = pd.concat([monthly_st[["month","views","tipo"]], monthly_total[["month","views","tipo"]]], ignore_index=True)
+        monthly_all = pd.concat([monthly_tipo, monthly_total], ignore_index=True)
         fig_ev = px.line(
             monthly_all,
             x="month",
             y="views",
             color="tipo",
             markers=True,
-            color_discrete_map={"Shorts": "#FF0050", "Largos": "#CC0000", "Total": "#333333"},
-            title="Vistas por mes — Shorts / Largos / Total",
-            labels={"month": "Mes", "views": "Vistas", "tipo": "Tipo"},
+            category_orders={"tipo": TIPO_ORDEN + ["Total"]},
+            color_discrete_map=TIPO_COLORS,
+            title="Vistas por mes — Shorts / Medianos / Completos / Total",
+            labels={"month": "Mes", "views": "Vistas", "tipo": "Formato"},
         )
         st.plotly_chart(fig_ev, use_container_width=True)
 
-        # Videos publicados por mes
-        pub = df.groupby(["month", "is_short"]).size().reset_index(name="cantidad")
-        pub["tipo"] = pub["is_short"].map({True: "Shorts", False: "Largos"})
+        pub = df.groupby(["month", "tipo"]).size().reset_index(name="cantidad")
         fig_pub = px.bar(
             pub,
             x="month",
             y="cantidad",
             color="tipo",
             barmode="stack",
-            color_discrete_map={"Shorts": "#FF0050", "Largos": "#FF0000"},
+            category_orders={"tipo": TIPO_ORDEN},
+            color_discrete_map=TIPO_COLORS,
             title="Videos publicados por mes",
-            labels={"month": "Mes", "cantidad": "Cantidad", "tipo": "Tipo"},
+            labels={"month": "Mes", "cantidad": "Cantidad", "tipo": "Formato"},
         )
         st.plotly_chart(fig_pub, use_container_width=True)
+
+        st.markdown("### Consistencia vs. desempeño")
+        st.caption("¿Publicar más seguido se relaciona con más vistas? Cada punto es un mes.")
+        consist = df.groupby("month").agg(videos=("id","count"), vistas=("views","sum")).reset_index()
+        if len(consist) >= 2:
+            fig_cons = px.scatter(
+                consist, x="videos", y="vistas", text="month",
+                title="Videos publicados por mes vs. vistas totales de ese mes",
+                labels={"videos": "Videos publicados", "vistas": "Vistas del mes"},
+                trendline="ols",
+            )
+            fig_cons.update_traces(textposition="top center")
+            st.plotly_chart(fig_cons, use_container_width=True)
 
     # Analytics diarias del canal
     st.subheader("Analytics diarias del canal")
@@ -497,22 +620,16 @@ with tab4:
                          color_discrete_sequence=["#FF0050"])
         e2.plotly_chart(fig_wt, use_container_width=True)
 
-        if "impressionClickThroughRate" in df_ch.columns:
-            e3, e4 = st.columns(2)
-            fig_ctr2 = px.line(df_ch, x="day", y="impressionClickThroughRate",
-                               title="CTR diario (%)", color_discrete_sequence=["#0066CC"])
-            e3.plotly_chart(fig_ctr2, use_container_width=True)
-
-            if "subscribersGained" in df_ch.columns:
-                df_ch["net_subs"] = df_ch["subscribersGained"] - df_ch.get("subscribersLost", 0)
-                fig_sub = px.bar(df_ch, x="day", y="net_subs", title="Suscriptores netos por día",
-                                 color_discrete_sequence=["#28a745"])
-                e4.plotly_chart(fig_sub, use_container_width=True)
+        if "subscribersGained" in df_ch.columns:
+            df_ch["net_subs"] = df_ch["subscribersGained"] - df_ch.get("subscribersLost", 0)
+            fig_sub = px.bar(df_ch, x="day", y="net_subs", title="Suscriptores netos por día",
+                             color_discrete_sequence=["#28a745"])
+            st.plotly_chart(fig_sub, use_container_width=True)
 
 # ════════════════════════════════════════════════════════════════════════════
-# TAB 5 — RETENCIÓN
+# TAB 6 — RETENCIÓN
 # ════════════════════════════════════════════════════════════════════════════
-with tab5:
+with tab6:
     st.subheader("🔁 Retención de audiencia")
     st.caption("Cuánto tiempo ven las personas cada video y dónde abandonan.")
 
@@ -524,71 +641,113 @@ with tab5:
         st.info("No hay datos de Analytics para el período seleccionado.")
     else:
         df_ret = df.merge(df_van_ret, on="id", how="inner", suffixes=("", "_analytics"))
-        df_ret_s = df_ret[df_ret["is_short"]]
-        df_ret_l = df_ret[~df_ret["is_short"]]
 
-        # ── Métricas resumen ─────────────────────────────────────────────
+        # ── Métricas resumen por formato ──────────────────────────────────
         st.markdown("### Promedios generales del canal")
-        r1, r2, r3, r4 = st.columns(4)
+        r1, r2, r3 = st.columns(3)
+        for col, tipo in zip([r1, r2, r3], TIPO_ORDEN):
+            sub = df_ret[df_ret["tipo"] == tipo]
+            if not sub.empty and "averageViewDuration" in sub.columns:
+                avg_dur = sub["averageViewDuration"].mean()
+                avg_pct = sub["averageViewPercentage"].mean() if "averageViewPercentage" in sub.columns else 0
+                if tipo == "Short":
+                    dur_label = f"{avg_dur:.0f} seg"
+                else:
+                    dur_label = f"{avg_dur/60:.1f} min"
+                col.metric(f"{TIPO_ICONS[tipo]} {tipo} — visto promedio", dur_label)
+                col.metric(f"{TIPO_ICONS[tipo]} {tipo} — % retenido", f"{avg_pct:.1f}%")
+            else:
+                col.metric(f"{tipo}", "Sin datos")
 
-        if not df_ret_s.empty and "averageViewDuration" in df_ret_s.columns:
-            avg_dur_s = df_ret_s["averageViewDuration"].mean()
-            avg_pct_s = df_ret_s["averageViewPercentage"].mean() if "averageViewPercentage" in df_ret_s.columns else 0
-            r1.metric("⏱️ Shorts — seg vistos promedio", f"{avg_dur_s:.0f} seg")
-            r2.metric("📊 Shorts — % retenido promedio", f"{avg_pct_s:.1f}%")
-        else:
-            r1.metric("Shorts", "Sin datos")
+        st.divider()
 
-        if not df_ret_l.empty and "averageViewDuration" in df_ret_l.columns:
-            avg_dur_l = df_ret_l["averageViewDuration"].mean()
-            avg_pct_l = df_ret_l["averageViewPercentage"].mean() if "averageViewPercentage" in df_ret_l.columns else 0
-            avg_min_l = avg_dur_l / 60
-            r3.metric("⏱️ Largos — min vistos promedio", f"{avg_min_l:.1f} min")
-            r4.metric("📊 Largos — % retenido promedio", f"{avg_pct_l:.1f}%")
+        # ── Gancho de los Shorts (primeros 3 segundos) ────────────────────
+        st.markdown("### 🪝 El gancho de los Shorts (primeros 3 segundos)")
+        st.caption("Si la gente no se queda en los primeros 3 segundos, el algoritmo deja de mostrarlo. Calculado sobre los Shorts más vistos del período.")
+
+        df_ret_s = df_ret[df_ret["tipo"] == "Short"].copy()
+        top_shorts_hook = df_ret_s.nlargest(8, "views")
+
+        @st.cache_data(show_spinner="Calculando gancho de Shorts...", ttl=86400)
+        def calcular_hooks(_analytics, video_ids, durations, end_iso):
+            filas = []
+            for vid, dur in zip(video_ids, durations):
+                df_curve, err = fetch_retention_curve(_analytics, vid, "2020-01-01", end_iso)
+                if err or df_curve.empty or dur <= 0:
+                    continue
+                ratio_3s = min(3 / dur, 1.0)
+                df_curve = df_curve.copy()
+                df_curve["dist"] = (df_curve["elapsedVideoTimeRatio"] - ratio_3s).abs()
+                fila = df_curve.sort_values("dist").iloc[0]
+                filas.append({"id": vid, "hook_pct": round(fila["audienceWatchRatio"] * 100, 1)})
+            return pd.DataFrame(filas)
+
+        if not top_shorts_hook.empty:
+            hooks_df = calcular_hooks(
+                analytics,
+                tuple(top_shorts_hook["id"]),
+                tuple(top_shorts_hook["duration_sec"]),
+                end_date.isoformat(),
+            )
+            if not hooks_df.empty:
+                top_shorts_hook = top_shorts_hook.merge(hooks_df, on="id", how="left")
+                top_shorts_hook["estado_hook"] = top_shorts_hook["hook_pct"].apply(
+                    lambda p: "🟢" if p >= 70 else ("🟡" if p >= 50 else "🔴")
+                )
+                st.dataframe(
+                    top_shorts_hook[["thumbnail","title","guest","views","hook_pct","estado_hook"]]
+                    .rename(columns={"thumbnail":"Miniatura","title":"Título","guest":"Invitado",
+                                      "views":"Vistas","hook_pct":"% que sigue viendo a los 3s","estado_hook":"Estado"}),
+                    column_config={"Miniatura": st.column_config.ImageColumn("Miniatura", width="small")},
+                    use_container_width=True, hide_index=True,
+                )
+                st.caption("🟢 ≥70% sigue viendo a los 3s (gancho fuerte) · 🟡 50-70% · 🔴 <50% (el gancho falla, replantear los primeros segundos)")
+            else:
+                st.info("No se pudo calcular el gancho para estos Shorts.")
         else:
-            r3.metric("Largos", "Sin datos")
+            st.info("No hay Shorts con datos de Analytics en el período.")
 
         st.divider()
 
         # ── Tabla de retención por video ─────────────────────────────────
         st.markdown("### Retención por video")
-        tipo_ret = st.radio("Ver", ["Largos", "Shorts", "Ambos"], horizontal=True, key="ret_tipo")
-        df_tabla = {"Largos": df_ret_l, "Shorts": df_ret_s, "Ambos": df_ret}[tipo_ret]
+        tipo_ret = st.radio("Ver", ["Completos", "Medianos", "Shorts", "Todos"], horizontal=True, key="ret_tipo")
+        if tipo_ret == "Todos":
+            df_tabla = df_ret
+        else:
+            tipo_map = {"Completos": "Completo", "Medianos": "Mediano", "Shorts": "Short"}
+            df_tabla = df_ret[df_ret["tipo"] == tipo_map[tipo_ret]]
 
         if df_tabla.empty:
-            st.info("Sin datos para ese tipo.")
+            st.info("Sin datos para ese formato.")
         else:
             df_tabla = df_tabla.copy()
             df_tabla["min_vistos"] = (df_tabla["averageViewDuration"] / 60).round(1)
             df_tabla["seg_vistos"] = df_tabla["averageViewDuration"].round(0).astype(int)
             df_tabla["duracion_display"] = df_tabla.apply(
-                lambda r: f"{r['seg_vistos']}s" if r["is_short"] else f"{r['duration_min']:.0f} min", axis=1
+                lambda r: f"{r['seg_vistos']}s" if r["tipo"]=="Short" else f"{r['duration_min']:.0f} min", axis=1
             )
             df_tabla["visto_display"] = df_tabla.apply(
-                lambda r: f"{r['seg_vistos']}s" if r["is_short"] else f"{r['min_vistos']} min", axis=1
+                lambda r: f"{r['seg_vistos']}s" if r["tipo"]=="Short" else f"{r['min_vistos']} min", axis=1
             )
             df_tabla["ret_pct"] = df_tabla["averageViewPercentage"].round(1)
 
-            # Color semáforo por retención
-            def color_ret(pct, is_short):
-                if is_short:
+            def color_ret(pct, tipo):
+                if tipo == "Short":
                     return "🟢" if pct >= 60 else ("🟡" if pct >= 35 else "🔴")
                 else:
                     return "🟢" if pct >= 40 else ("🟡" if pct >= 20 else "🔴")
 
-            df_tabla["estado"] = df_tabla.apply(
-                lambda r: color_ret(r["ret_pct"], r["is_short"]), axis=1
-            )
+            df_tabla["estado"] = df_tabla.apply(lambda r: color_ret(r["ret_pct"], r["tipo"]), axis=1)
 
             cols_show = ["thumbnail","title","guest","tipo","duracion_display","visto_display","ret_pct","estado","views"]
             cols_names = {
-                "thumbnail":"Miniatura","title":"Título","guest":"Invitado","tipo":"Tipo",
+                "thumbnail":"Miniatura","title":"Título","guest":"Invitado","tipo":"Formato",
                 "duracion_display":"Duración","visto_display":"Promedio visto",
                 "ret_pct":"% Retención","estado":"Estado","views":"Vistas"
             }
             st.dataframe(
-                df_tabla.sort_values("ret_pct", ascending=False)[cols_show]
-                .rename(columns=cols_names),
+                df_tabla.sort_values("ret_pct", ascending=False)[cols_show].rename(columns=cols_names),
                 column_config={"Miniatura": st.column_config.ImageColumn("Miniatura", width="small")},
                 use_container_width=True,
                 hide_index=True,
@@ -596,50 +755,67 @@ with tab5:
 
         st.divider()
 
-        # ── Análisis de últimos 10 minutos ───────────────────────────────
-        st.markdown("### ¿Cuánta gente llega a los últimos 10 minutos?")
-        st.caption("Solo aplica a videos largos de más de 20 minutos.")
+        # ── Análisis de últimos 10 minutos (solo Completos) ───────────────
+        st.markdown("### ¿Cuánta gente llega a los últimos 10 minutos del capítulo?")
+        st.caption("Solo aplica a los Capítulos Completos (+1 hora).")
 
-        df_largos_ret = df_ret_l[df_ret_l["duration_min"] >= 20].copy()
-        if df_largos_ret.empty:
-            st.info("No hay videos largos de más de 20 minutos con datos de Analytics.")
+        df_comp_ret = df_ret[df_ret["tipo"] == "Completo"].copy()
+        if df_comp_ret.empty:
+            st.info("No hay Capítulos Completos con datos de Analytics en el período.")
         else:
-            df_largos_ret["umbral_ultimos10_pct"] = (
-                (df_largos_ret["duration_sec"] - 600) / df_largos_ret["duration_sec"] * 100
+            df_comp_ret["umbral_ultimos10_pct"] = (
+                (df_comp_ret["duration_sec"] - 600) / df_comp_ret["duration_sec"] * 100
             ).clip(0, 100)
-            df_largos_ret["llega_ultimos10"] = (
-                df_largos_ret["averageViewPercentage"] >= df_largos_ret["umbral_ultimos10_pct"]
+            df_comp_ret["llega_ultimos10"] = (
+                df_comp_ret["averageViewPercentage"] >= df_comp_ret["umbral_ultimos10_pct"]
             )
-            df_largos_ret["min_vistos"] = (df_largos_ret["averageViewDuration"] / 60).round(1)
+            df_comp_ret["min_vistos"] = (df_comp_ret["averageViewDuration"] / 60).round(1)
 
-            llegan = df_largos_ret["llega_ultimos10"].sum()
-            total  = len(df_largos_ret)
+            llegan = df_comp_ret["llega_ultimos10"].sum()
+            total  = len(df_comp_ret)
             st.markdown(f"""
-**{llegan} de {total} videos** tienen retención promedio que llega a los últimos 10 minutos.
+**{llegan} de {total} capítulos** tienen retención promedio que llega a los últimos 10 minutos.
 
-Esto significa que en esos {llegan} videos el espectador típico se queda hasta casi el final.
+Esto significa que en esos {llegan} episodios el espectador típico se queda hasta casi el final.
 En los restantes {total - llegan}, la gente se va antes de esa sección final.
 """)
             fig_u10 = px.bar(
-                df_largos_ret.sort_values("averageViewPercentage", ascending=False),
+                df_comp_ret.sort_values("averageViewPercentage", ascending=False),
                 x="averageViewPercentage",
                 y="title",
                 orientation="h",
                 color="llega_ultimos10",
                 color_discrete_map={True: "#28a745", False: "#dc3545"},
-                title="% de retención promedio por video largo (🟢 llega al final | 🔴 se va antes)",
+                title="% de retención promedio por capítulo (🟢 llega al final | 🔴 se va antes)",
                 labels={"averageViewPercentage": "% Retención promedio", "title": "", "llega_ultimos10": "Llega al final"},
                 text="min_vistos",
             )
             fig_u10.update_traces(texttemplate="%{text} min vistos", textposition="outside")
-            fig_u10.update_layout(yaxis={"categoryorder": "total ascending"}, height=max(400, len(df_largos_ret)*35))
+            fig_u10.update_layout(yaxis={"categoryorder": "total ascending"}, height=max(400, len(df_comp_ret)*35))
             st.plotly_chart(fig_u10, use_container_width=True)
 
         st.divider()
 
-        # ── Curva de retención real por video ────────────────────────────
+        # ── Curva de retención real por video, vs promedio del canal ──────
         st.markdown("### Curva de retención detallada por video")
-        st.caption("Seleccioná un video para ver exactamente en qué segundo/minuto la gente abandona.")
+        st.caption("Seleccioná un video para ver exactamente en qué segundo/minuto la gente abandona, comparado contra el promedio del canal para ese formato.")
+
+        @st.cache_data(show_spinner="Calculando curva promedio del canal...", ttl=86400)
+        def curva_promedio(_analytics, video_ids, end_iso):
+            curvas = []
+            for vid in video_ids:
+                df_c, err = fetch_retention_curve(_analytics, vid, "2020-01-01", end_iso)
+                if err or df_c.empty:
+                    continue
+                tmp = df_c[["elapsedVideoTimeRatio", "audienceWatchRatio"]].copy()
+                tmp["bucket"] = (tmp["elapsedVideoTimeRatio"] * 20).round() / 20
+                curvas.append(tmp)
+            if not curvas:
+                return pd.DataFrame()
+            todas = pd.concat(curvas)
+            avg = todas.groupby("bucket")["audienceWatchRatio"].mean().reset_index()
+            avg["porcentaje_avg"] = (avg["audienceWatchRatio"] * 100).round(1)
+            return avg
 
         if not df_ret.empty:
             video_opciones = {f"{r['title'][:70]} ({r['tipo']})": r["id"]
@@ -651,10 +827,11 @@ En los restantes {total - llegan}, la gente se va antes de esa sección final.
                 vid_row = df_ret[df_ret["id"] == vid_id].iloc[0]
                 dur_sec = vid_row["duration_sec"]
                 dur_min = vid_row["duration_min"]
+                tipo_vid = vid_row["tipo"]
 
                 c_info1, c_info2, c_info3 = st.columns(3)
-                c_info1.metric("Duración total", f"{dur_min:.0f} min" if not vid_row["is_short"] else f"{dur_sec:.0f} seg")
-                c_info2.metric("Tiempo visto promedio", f"{vid_row['averageViewDuration']/60:.1f} min" if not vid_row["is_short"] else f"{vid_row['averageViewDuration']:.0f} seg")
+                c_info1.metric("Duración total", f"{dur_min:.0f} min" if tipo_vid != "Short" else f"{dur_sec:.0f} seg")
+                c_info2.metric("Tiempo visto promedio", f"{vid_row['averageViewDuration']/60:.1f} min" if tipo_vid != "Short" else f"{vid_row['averageViewDuration']:.0f} seg")
                 c_info3.metric("% Retención promedio", f"{vid_row['averageViewPercentage']:.1f}%")
 
                 with st.spinner("Cargando curva de retención..."):
@@ -667,43 +844,48 @@ En los restantes {total - llegan}, la gente se va antes de esa sección final.
                 elif df_curve.empty:
                     st.info("No hay datos suficientes para este video.")
                 else:
-                    df_curve["tiempo_display"] = df_curve["elapsedVideoTimeRatio"].apply(
-                        lambda r: f"{r * dur_sec / 60:.1f} min" if dur_sec > 120 else f"{r * dur_sec:.0f} seg"
-                    )
                     df_curve["porcentaje"] = (df_curve["audienceWatchRatio"] * 100).round(1)
                     df_curve["tiempo_seg"] = df_curve["elapsedVideoTimeRatio"] * dur_sec
 
-                    fig_curve = px.area(
-                        df_curve,
-                        x="tiempo_seg",
-                        y="porcentaje",
-                        title=f"Curva de retención — {vid_row['title'][:60]}",
-                        labels={"tiempo_seg": "Tiempo (segundos)", "porcentaje": "% espectadores que siguen viendo"},
-                        color_discrete_sequence=["#FF0000"],
-                    )
+                    fig_curve = go.Figure()
+                    fig_curve.add_trace(go.Scatter(
+                        x=df_curve["tiempo_seg"], y=df_curve["porcentaje"],
+                        mode="lines", fill="tozeroy", name="Este video",
+                        line=dict(color="#FF0000"),
+                    ))
 
-                    # Línea de los últimos 10 min
+                    # Curva promedio del canal para ese formato (top 5 por vistas)
+                    candidatos = df_ret[df_ret["tipo"] == tipo_vid].nlargest(5, "views")["id"].tolist()
+                    avg_curve = curva_promedio(analytics, tuple(candidatos), end_date.isoformat())
+                    if not avg_curve.empty:
+                        fig_curve.add_trace(go.Scatter(
+                            x=avg_curve["bucket"] * dur_sec, y=avg_curve["porcentaje_avg"],
+                            mode="lines", name=f"Promedio canal ({tipo_vid})",
+                            line=dict(color="gray", dash="dash"),
+                        ))
+
                     if dur_sec > 600:
                         fig_curve.add_vline(
-                            x=dur_sec - 600,
-                            line_dash="dash",
-                            line_color="orange",
-                            annotation_text="Últimos 10 min",
-                            annotation_position="top right",
+                            x=dur_sec - 600, line_dash="dash", line_color="orange",
+                            annotation_text="Últimos 10 min", annotation_position="top right",
                         )
-
-                    # Línea de 50% del video
+                    if dur_sec > 6:
+                        fig_curve.add_vline(
+                            x=3, line_dash="dot", line_color="purple",
+                            annotation_text="3 seg (gancho)",
+                        )
                     fig_curve.add_vline(
-                        x=dur_sec * 0.5,
-                        line_dash="dot",
-                        line_color="gray",
+                        x=dur_sec * 0.5, line_dash="dot", line_color="lightgray",
                         annotation_text="Mitad del video",
                     )
 
-                    fig_curve.update_layout(height=420, yaxis_range=[0, 110])
+                    fig_curve.update_layout(
+                        title=f"Curva de retención — {vid_row['title'][:60]}",
+                        xaxis_title="Tiempo (segundos)", yaxis_title="% espectadores que siguen viendo",
+                        height=420, yaxis_range=[0, 110],
+                    )
                     st.plotly_chart(fig_curve, use_container_width=True)
 
-                    # Interpretación automática
                     drop_30 = df_curve[df_curve["elapsedVideoTimeRatio"] <= 0.33]["porcentaje"].min() if not df_curve.empty else 100
                     drop_50 = df_curve[df_curve["elapsedVideoTimeRatio"] <= 0.50]["porcentaje"].min() if not df_curve.empty else 100
                     drop_80 = df_curve[df_curve["elapsedVideoTimeRatio"] <= 0.80]["porcentaje"].min() if not df_curve.empty else 100
@@ -712,48 +894,123 @@ En los restantes {total - llegan}, la gente se va antes de esa sección final.
                     st.markdown(f"""
 | Punto del video | % espectadores que llegan |
 |---|---|
-| Primer tercio (~{dur_sec*0.33/60:.0f} min) | **{drop_30:.0f}%** |
-| Mitad (~{dur_sec*0.5/60:.0f} min) | **{drop_50:.0f}%** |
-| 80% del video (~{dur_sec*0.8/60:.0f} min) | **{drop_80:.0f}%** |
-| Últimos 10 min | **solo calculable con curva completa** |
+| Primer tercio (~{dur_sec*0.33/60:.1f} min) | **{drop_30:.0f}%** |
+| Mitad (~{dur_sec*0.5/60:.1f} min) | **{drop_50:.0f}%** |
+| 80% del video (~{dur_sec*0.8/60:.1f} min) | **{drop_80:.0f}%** |
 """)
+                    if not avg_curve.empty:
+                        avg_at_50 = avg_curve[avg_curve["bucket"] <= 0.5]["porcentaje_avg"].min()
+                        if drop_50 > avg_at_50:
+                            st.success(f"✅ Este video retiene mejor que el promedio del canal a la mitad ({drop_50:.0f}% vs {avg_at_50:.0f}%).")
+                        else:
+                            st.warning(f"⚠️ Este video retiene peor que el promedio del canal a la mitad ({drop_50:.0f}% vs {avg_at_50:.0f}%).")
                     if drop_30 < 60:
-                        st.warning(f"⚠️ El primer tercio pierde mucha gente ({100-drop_30:.0f}% abandona antes de los {dur_sec*0.33/60:.0f} min). El inicio necesita más gancho.")
-                    if drop_50 < 40:
-                        st.warning(f"⚠️ La mitad del video ya perdió el {100-drop_50:.0f}% del público. El contenido del medio puede estar flojo o muy extenso.")
+                        st.warning(f"⚠️ El primer tercio pierde mucha gente ({100-drop_30:.0f}% abandona antes de los {dur_sec*0.33/60:.1f} min). El inicio necesita más gancho.")
                     if drop_80 > 30:
                         st.success(f"✅ El {drop_80:.0f}% llega al 80% del video — el final engancha bien.")
 
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 7 — SEMÁFORO
+# ════════════════════════════════════════════════════════════════════════════
+with tab7:
+    st.subheader("🚦 Semáforo de desempeño")
+    st.caption("Compara cada invitado contra el promedio del canal en cada formato. 🟢 por arriba del promedio · 🟡 cerca del promedio · 🔴 por debajo.")
+
+    if df.empty:
+        st.info("Sin datos para el período seleccionado.")
+    else:
+        # Promedios del canal por formato
+        avg_canal = {}
+        for tipo in TIPO_ORDEN:
+            sub = df[df["tipo"] == tipo]
+            avg_canal[tipo] = sub["views"].mean() if not sub.empty else 0
+        avg_like_canal = df["like_rate"].mean()
+
+        guest_df = build_guest_summary(df)
+        filas = []
+        for _, row in guest_df.iterrows():
+            guest = row["Invitado"]
+            gdf = df[df["guest"] == guest]
+            fila = {"Invitado": guest, "Videos": int(row["Videos"])}
+            for tipo in TIPO_ORDEN:
+                n = int(row[f"Videos {tipo}"])
+                if n > 0:
+                    avg_views = row[f"Vistas {tipo}"] / n
+                    fila[f"{TIPO_ICONS[tipo]} {tipo}"] = f"{semaforo(avg_views, avg_canal[tipo])} {avg_views:,.0f}"
+                else:
+                    fila[f"{TIPO_ICONS[tipo]} {tipo}"] = "—"
+            avg_like_guest = gdf["like_rate"].mean()
+            fila["❤️ % Likes"] = f"{semaforo(avg_like_guest, avg_like_canal)} {avg_like_guest:.1f}%"
+            filas.append(fila)
+
+        st.markdown("#### Vistas promedio por video, por formato")
+        st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
+        st.caption(f"Promedio del canal — 🎬 Shorts: {avg_canal['Short']:,.0f} vistas · 🎯 Medianos: {avg_canal['Mediano']:,.0f} vistas · 📹 Completos: {avg_canal['Completo']:,.0f} vistas · ❤️ Likes: {avg_like_canal:.1f}%")
+
+        st.divider()
+
+        # ── Embudo Shorts -> Completo por invitado ────────────────────────
+        st.markdown("#### 🔄 Embudo: Shorts → Capítulo Completo")
+        st.caption("Por cada invitado, relación entre las vistas de sus Shorts y las vistas de su Capítulo Completo. Una proporción alta sugiere que los Shorts atraen tráfico hacia el episodio entero.")
+
+        embudo = []
+        for _, row in guest_df.iterrows():
+            guest = row["Invitado"]
+            if guest == "Solo (sin invitado)":
+                continue
+            v_short = row["Vistas Short"]
+            v_comp  = row["Vistas Completo"]
+            if v_comp > 0:
+                ratio = v_short / v_comp
+                embudo.append({
+                    "Invitado": guest,
+                    "Vistas Shorts": v_short,
+                    "Vistas Completo": v_comp,
+                    "Shorts por cada vista del Completo": round(ratio, 2),
+                })
+        if embudo:
+            df_embudo = pd.DataFrame(embudo).sort_values("Shorts por cada vista del Completo", ascending=False)
+            st.dataframe(
+                df_embudo.style.format({
+                    "Vistas Shorts": "{:,}", "Vistas Completo": "{:,}",
+                    "Shorts por cada vista del Completo": "{:.2f}",
+                }),
+                use_container_width=True, hide_index=True,
+            )
+            st.caption("Un número alto = los Shorts de ese invitado generaron muchas vistas en relación al Completo. Si el Completo tiene pocas vistas pese a Shorts exitosos, el problema puede estar en el título/miniatura del capítulo o en la falta de un CTA claro en el Short hacia el video completo.")
+        else:
+            st.info("No hay invitados con Shorts y Capítulo Completo en el período para comparar.")
 
 # ════════════════════════════════════════════════════════════════════════════
-# TAB 6 — RECOMENDACIONES
+# TAB 8 — RECOMENDACIONES
 # ════════════════════════════════════════════════════════════════════════════
-with tab6:
+with tab8:
     st.subheader("💡 Análisis y recomendaciones")
 
     if df.empty:
         st.info("Sin datos para el período seleccionado.")
     else:
-        df_s   = df[df["is_short"]]
-        df_l   = df[~df["is_short"]]
+        df_s    = df[df["tipo"] == "Short"]
+        df_m    = df[df["tipo"] == "Mediano"]
+        df_c    = df[df["tipo"] == "Completo"]
         df_van2, _ = fetch_video_analytics(analytics, start_date.isoformat(), end_date.isoformat())
         guest_sum  = build_guest_summary(df)
         solo_row   = guest_sum[guest_sum["Invitado"] == "Solo (sin invitado)"]
         inv_rows   = guest_sum[guest_sum["Invitado"] != "Solo (sin invitado)"]
         best_guest = inv_rows.iloc[0] if not inv_rows.empty else None
-        top_largo  = df_l.nlargest(1, "views").iloc[0] if not df_l.empty else None
+        top_comp   = df_c.nlargest(1, "views").iloc[0] if not df_c.empty else None
+        top_med    = df_m.nlargest(1, "views").iloc[0] if not df_m.empty else None
         top_short  = df_s.nlargest(1, "views").iloc[0] if not df_s.empty else None
 
         # ════════════════════════════════════════
         st.markdown("## 📋 QUÉ HICIMOS")
         st.markdown(f"""
 En el período seleccionado publicaste **{len(df)} piezas de contenido**:
-- **{len(df_s)} Shorts** y **{len(df_l)} Videos Largos**
+- **{len(df_s)} Shorts**, **{len(df_m)} Medianos** y **{len(df_c)} Capítulos Completos**
 - **{len(inv_rows)} invitados** distintos aparecieron en el canal
 - El mes con más publicaciones fue **{df.groupby('month').size().idxmax() if not df.empty else '—'}**
 - Total de vistas generadas: **{df['views'].sum():,}**
-  — Shorts: **{df_s['views'].sum():,}** vistas
-  — Largos: **{df_l['views'].sum():,}** vistas
+  — Shorts: **{df_s['views'].sum():,}** · Medianos: **{df_m['views'].sum():,}** · Completos: **{df_c['views'].sum():,}**
         """)
 
         # ════════════════════════════════════════
@@ -761,14 +1018,12 @@ En el período seleccionado publicaste **{len(df)} piezas de contenido**:
 
         st.markdown("### Invitados")
         if best_guest is not None:
-            avg_inv  = int(inv_rows["Vistas totales"].mean())
-            avg_solo = int(solo_row["Vistas totales"].mean()) if not solo_row.empty else 0
             avg_solo_vid = int(solo_row["Vistas totales"].sum() / max(solo_row["Videos"].sum(), 1)) if not solo_row.empty else 0
             avg_inv_vid  = int(inv_rows["Vistas totales"].sum() / max(inv_rows["Videos"].sum(), 1))
             st.markdown(f"""
 <div class="rec-good">
 🏆 <b>{best_guest['Invitado']}</b> fue el invitado con más impacto: <b>{int(best_guest['Vistas totales']):,} vistas</b> en {int(best_guest['Videos'])} videos
-({int(best_guest['Vistas Shorts']):,} por Shorts + {int(best_guest['Vistas Largos']):,} por Largos).<br><br>
+({int(best_guest['Vistas Short']):,} Shorts + {int(best_guest['Vistas Mediano']):,} Medianos + {int(best_guest['Vistas Completo']):,} Completos).<br><br>
 Promedio por video <b>con invitado</b>: {avg_inv_vid:,} vistas.<br>
 Promedio por video <b>sin invitado</b> (solo Tom y Thiago): {avg_solo_vid:,} vistas.
 </div>""", unsafe_allow_html=True)
@@ -804,38 +1059,51 @@ El Short más visto fue <b>"{top_short['title'][:65]}"</b> con <b>{int(top_short
                 st.markdown(f"""
 <div class="rec-card">
 ⚠️ <b>{len(bottom_s)} Shorts</b> están por debajo del promedio del canal ({avg_s:,} vistas).
-Eso indica que el gancho (primeros 1-2 segundos) o el tema no enganchó lo suficiente
-para que el algoritmo los distribuya.
+Eso indica que el gancho (primeros 1-3 segundos) o el tema no enganchó lo suficiente
+para que el algoritmo los distribuya. Revisá la pestaña Retención → "El gancho de los Shorts".
 </div>""", unsafe_allow_html=True)
         else:
             st.info("No hay Shorts en el período seleccionado.")
 
-        st.markdown("### Videos Largos")
-        if not df_l.empty:
-            avg_l = int(df_l["views"].mean())
+        st.markdown("### Medianos")
+        if not df_m.empty:
+            avg_m = int(df_m["views"].mean())
             st.markdown(f"""
 <div class="rec-good">
-📹 Publicaste <b>{len(df_l)} Videos Largos</b> con un promedio de <b>{avg_l:,} vistas cada uno</b>.<br>
-El más visto fue <b>"{top_largo['title'][:65]}"</b> con <b>{int(top_largo['views']):,} vistas</b>
-(invitado: {top_largo['guest']}).
+🎯 Publicaste <b>{len(df_m)} Medianos</b> con un promedio de <b>{avg_m:,} vistas cada uno</b>.<br>
+El más visto fue <b>"{top_med['title'][:65]}"</b> con <b>{int(top_med['views']):,} vistas</b>
+(invitado: {top_med['guest']}).
+</div>""", unsafe_allow_html=True)
+        else:
+            st.info("No hay Medianos en el período seleccionado.")
+
+        st.markdown("### Capítulos Completos")
+        if not df_c.empty:
+            avg_c = int(df_c["views"].mean())
+            st.markdown(f"""
+<div class="rec-good">
+📹 Publicaste <b>{len(df_c)} Capítulos Completos</b> con un promedio de <b>{avg_c:,} vistas cada uno</b>.<br>
+El más visto fue <b>"{top_comp['title'][:65]}"</b> con <b>{int(top_comp['views']):,} vistas</b>
+(invitado: {top_comp['guest']}).
 </div>""", unsafe_allow_html=True)
 
             if not df_van2.empty:
-                df_ml = df_l.merge(df_van2, on="id", how="left", suffixes=("", "_analytics")).dropna(subset=["averageViewPercentage"])
-                if not df_ml.empty:
-                    avg_ret = df_ml["averageViewPercentage"].mean()
+                df_mc = df_c.merge(df_van2, on="id", how="left", suffixes=("", "_analytics")).dropna(subset=["averageViewPercentage"])
+                if not df_mc.empty:
+                    avg_ret = df_mc["averageViewPercentage"].mean()
                     st.markdown(f"""
 <div class="{'rec-good' if avg_ret >= 30 else 'rec-card'}">
-⏱️ <b>Retención promedio: {avg_ret:.1f}%</b> de los videos largos.
+⏱️ <b>Retención promedio: {avg_ret:.1f}%</b> de los Capítulos Completos.
 {"Buen número — la gente termina de ver una parte importante del contenido." if avg_ret >= 30 else "Está por debajo del 30% recomendado. La gente abandona antes de la mitad."}
 </div>""", unsafe_allow_html=True)
+        else:
+            st.info("No hay Capítulos Completos en el período seleccionado.")
 
         # ════════════════════════════════════════
         st.markdown("## 🚀 QUÉ HACER AHORA")
 
         acciones = []
 
-        # Acción sobre invitados
         if best_guest is not None:
             acciones.append(f"""
 **1. Traé de vuelta a {best_guest['Invitado']}**
@@ -843,7 +1111,6 @@ Fue tu invitado más efectivo con {int(best_guest['Vistas totales']):,} vistas.
 Repetir invitados exitosos es una estrategia probada — el público ya los conoce y confía.
 Idealmente en un formato nuevo o con un ángulo de conversación diferente al anterior.""")
 
-        # Acción sobre Shorts
         if not df_s.empty and top_short is not None:
             acciones.append(f"""
 **2. Replicá la fórmula de tu Short más viral**
@@ -851,28 +1118,34 @@ Idealmente en un formato nuevo o con un ángulo de conversación diferente al an
 Revisá: ¿qué dice en el primer segundo? ¿Es una pregunta, una afirmación fuerte, o algo inesperado?
 Usá esa misma estructura de arranque en los próximos 3 Shorts.""")
 
-        # Acción sobre retención (reemplaza CTR que ya no está disponible)
-
-        # Acción sobre retención
-        if not df_van2.empty and not df_l.empty:
-            df_ml3 = df_l.merge(df_van2, on="id", how="left", suffixes=("", "_analytics")).dropna(subset=["averageViewPercentage"])
-            if not df_ml3.empty:
-                avg_ret2 = df_ml3["averageViewPercentage"].mean()
+        if not df_van2.empty and not df_c.empty:
+            df_mc3 = df_c.merge(df_van2, on="id", how="left", suffixes=("", "_analytics")).dropna(subset=["averageViewPercentage"])
+            if not df_mc3.empty:
+                avg_ret2 = df_mc3["averageViewPercentage"].mean()
                 if avg_ret2 < 35:
                     acciones.append(f"""
-**4. Mejorá los primeros 2 minutos de los Videos Largos**
+**3. Mejorá los primeros 2 minutos de los Capítulos Completos**
 La retención promedio es {avg_ret2:.0f}% — la gente se va antes de la mitad.
 La causa más común: intro demasiado larga o arranque lento.
 Probá empezar directamente con la idea más fuerte del episodio, sin presentaciones.""")
 
-        # Acción sobre invitado sin explorar
         if not inv_rows.empty:
             menos_visto = inv_rows.iloc[-1]
             acciones.append(f"""
-**5. Analizá por qué {menos_visto['Invitado']} tuvo menos tracción**
+**4. Analizá por qué {menos_visto['Invitado']} tuvo menos tracción**
 Solo generó {int(menos_visto['Vistas totales']):,} vistas en {int(menos_visto['Videos'])} videos.
 Puede ser por el tema tratado, la hora de publicación, la miniatura, o simplemente que el público aún no lo conoce.
 Antes de descartarlo, probá con un Short que tenga un gancho más fuerte sobre su historia.""")
+
+        if not df_m.empty and not df_c.empty:
+            avg_m_views = df_m["views"].mean()
+            avg_c_views = df_c["views"].mean()
+            if avg_m_views > avg_c_views * 1.3:
+                acciones.append(f"""
+**5. Los Medianos están superando a los Completos**
+Los clips Medianos promedian {int(avg_m_views):,} vistas vs {int(avg_c_views):,} de los Completos.
+Probá usar los Medianos como "tráiler" del capítulo: subilos primero, y en la descripción/comentario
+fijado linkeá al Capítulo Completo correspondiente para canalizar ese interés.""")
 
         if acciones:
             for accion in acciones:
@@ -882,20 +1155,94 @@ Antes de descartarlo, probá con un Short que tenga un gancho más fuerte sobre 
             st.info("Necesitás más datos en el período para generar recomendaciones.")
 
 # ════════════════════════════════════════════════════════════════════════════
-# TAB 7 — DIAGNÓSTICO
+# TAB 9 — PLAN DE ACCIÓN
 # ════════════════════════════════════════════════════════════════════════════
-with tab7:
+with tab9:
+    st.subheader("✅ Plan de Acción")
+    st.caption("Resumen ejecutivo: lo que el equipo debería revisar y decidir esta semana, en base a los datos del período seleccionado.")
+
+    if df.empty:
+        st.info("Sin datos para el período seleccionado.")
+    else:
+        df_s = df[df["tipo"] == "Short"]
+        df_m = df[df["tipo"] == "Mediano"]
+        df_c = df[df["tipo"] == "Completo"]
+        guest_sum = build_guest_summary(df)
+        inv_rows  = guest_sum[guest_sum["Invitado"] != "Solo (sin invitado)"]
+        df_van3, _ = fetch_video_analytics(analytics, start_date.isoformat(), end_date.isoformat())
+
+        items = []
+
+        # 1. Invitado a repetir
+        if not inv_rows.empty:
+            best = inv_rows.iloc[0]
+            items.append(("Contenido", f"Re-contactar a **{best['Invitado']}** para grabar de nuevo (su contenido generó {int(best['Vistas totales']):,} vistas)."))
+
+        # 2. Shorts bajo promedio
+        if not df_s.empty:
+            avg_s = df_s["views"].mean()
+            bajos = df_s[df_s["views"] < avg_s * 0.6]
+            if not bajos.empty:
+                items.append(("Shorts", f"Revisar el gancho (primeros 3s) de los **{len(bajos)} Shorts** con menos del 60% del promedio del canal. Ver pestaña Retención."))
+
+        # 3. Retención de completos
+        if not df_van3.empty and not df_c.empty:
+            df_mc = df_c.merge(df_van3, on="id", how="left", suffixes=("", "_analytics")).dropna(subset=["averageViewPercentage"])
+            if not df_mc.empty:
+                avg_ret = df_mc["averageViewPercentage"].mean()
+                if avg_ret < 35:
+                    peor = df_mc.nsmallest(1, "averageViewPercentage").iloc[0]
+                    items.append(("Completos", f"La retención promedio de Completos es {avg_ret:.0f}% (objetivo: 35%+). Empezar por **\"{peor['title'][:50]}...\"** ({peor['averageViewPercentage']:.0f}% retención) — analizar si la intro es muy larga."))
+                else:
+                    items.append(("Completos", f"La retención promedio de Completos está bien ({avg_ret:.0f}%). Mantener el formato de apertura actual."))
+
+        # 4. Embudo Shorts -> Completo
+        embudo_bajo = []
+        for _, row in guest_sum.iterrows():
+            if row["Invitado"] == "Solo (sin invitado)":
+                continue
+            if row["Vistas Short"] > 0 and row["Vistas Completo"] == 0:
+                embudo_bajo.append(row["Invitado"])
+        if embudo_bajo:
+            items.append(("Embudo", f"Invitados con Shorts publicados pero sin Capítulo Completo en el período: **{', '.join(embudo_bajo[:5])}**. Si ya grabaron el capítulo entero, programar su publicación."))
+
+        # 5. Consistencia
+        if not df.empty:
+            meses = df.groupby("month").size()
+            if len(meses) >= 2 and meses.std() / meses.mean() > 0.4:
+                items.append(("Consistencia", f"La cantidad de publicaciones varía mucho mes a mes (entre {int(meses.min())} y {int(meses.max())}). Definir un calendario fijo de publicación reduce la variabilidad de vistas."))
+
+        # 6. Invitado con menor tracción
+        if not inv_rows.empty and len(inv_rows) > 1:
+            peor_inv = inv_rows.iloc[-1]
+            items.append(("Invitados", f"**{peor_inv['Invitado']}** tuvo la menor tracción ({int(peor_inv['Vistas totales']):,} vistas). Decidir: ¿probar un nuevo ángulo de Short sobre su contenido, o no volver a invitarlo?"))
+
+        if not items:
+            st.info("No hay suficientes datos en el período para generar un plan de acción.")
+        else:
+            for area, texto in items:
+                st.markdown(f"""
+<div class="accion-card">
+<b>[{area}]</b><br>{texto}
+</div>""", unsafe_allow_html=True)
+                st.checkbox("Revisado / decidido", key=f"plan_{area}_{texto[:30]}")
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 10 — DIAGNÓSTICO
+# ════════════════════════════════════════════════════════════════════════════
+with tab10:
     st.subheader("🔧 Diagnóstico — Clasificación de todos los videos")
-    st.caption("Usá esta tabla para verificar que cada video esté bien clasificado. Si ves errores avisale al desarrollador.")
+    st.caption("Usá esta tabla para verificar que cada video esté bien clasificado (Short / Mediano / Completo) y que el invitado detectado sea correcto.")
 
     if df_all.empty:
         st.info("Sin datos.")
     else:
-        st.markdown(f"**Total de videos cargados:** {len(df_all)}  |  "
-                    f"**Shorts:** {df_all['is_short'].sum()}  |  "
-                    f"**Largos:** {(~df_all['is_short']).sum()}")
+        counts = df_all["tipo"].value_counts()
+        st.markdown(
+            f"**Total de videos cargados:** {len(df_all)}  |  "
+            + "  |  ".join(f"**{TIPO_ICONS[t]} {t}:** {counts.get(t, 0)}" for t in TIPO_ORDEN)
+        )
 
-        # Botón de descarga — punto y coma para Excel en español, sin emojis
         import re as _re
         def _limpiar(texto):
             if not isinstance(texto, str):
@@ -903,10 +1250,10 @@ with tab7:
             return _re.sub(r'[^\x00-\x7FáéíóúÁÉÍÓÚñÑüÜ¿¡@._\-\(\)\[\]#:,/ ]', '', texto).strip()
 
         csv_diag = df_all[["title","tipo","guest","duration_min","views","published_at"]].copy()
-        csv_diag["title"]   = csv_diag["title"].apply(_limpiar)
-        csv_diag["guest"]   = csv_diag["guest"].apply(_limpiar)
+        csv_diag["title"] = csv_diag["title"].apply(_limpiar)
+        csv_diag["guest"] = csv_diag["guest"].apply(_limpiar)
         csv_diag["published_at"] = csv_diag["published_at"].dt.strftime("%Y-%m-%d")
-        csv_diag.columns = ["Titulo","Tipo","Invitado detectado","Duracion (min)","Vistas","Publicado"]
+        csv_diag.columns = ["Titulo","Formato","Invitado detectado","Duracion (min)","Vistas","Publicado"]
         st.download_button(
             label="Descargar lista completa (abrir con Excel)",
             data=csv_diag.to_csv(index=False, encoding="utf-8-sig", sep=";"),
@@ -926,7 +1273,7 @@ with tab7:
             df_diag[["thumbnail","title","tipo","guest","duration_min","views","published_at"]]
             .sort_values("published_at", ascending=False)
             .rename(columns={
-                "thumbnail":"Miniatura","title":"Título","tipo":"Tipo",
+                "thumbnail":"Miniatura","title":"Título","tipo":"Formato",
                 "guest":"Invitado detectado","duration_min":"Duración (min)",
                 "views":"Vistas","published_at":"Publicado",
             }),
@@ -934,37 +1281,6 @@ with tab7:
             use_container_width=True,
             hide_index=True,
         )
-
-        st.divider()
-        st.markdown("### Validación contra números reales")
-        ESPERADO_LARGOS = {
-            "Solo (sin invitado)": 13,
-            "SarcaOne":            6,
-            "Roas Marketing":      6,
-            "Silvia Vales":        6,
-            "Juan Massola":        6,
-            "Nahuel":              5,
-            "Bauti Aschiero":      1,
-        }
-        largos_actuales = df_all[~df_all["is_short"]].groupby("guest")["id"].count().to_dict()
-        val_rows = []
-        for inv, esperado in ESPERADO_LARGOS.items():
-            actual = largos_actuales.get(inv, 0)
-            diferencia = actual - esperado
-            estado = "✅" if diferencia == 0 else ("⬆️ sobran" if diferencia > 0 else "⬇️ faltan")
-            val_rows.append({"Invitado": inv, "Esperado": esperado, "Actual": actual,
-                             "Diferencia": abs(diferencia), "Estado": estado if diferencia == 0 else f"{estado} {abs(diferencia)}"})
-        st.dataframe(pd.DataFrame(val_rows), use_container_width=True, hide_index=True)
-        total_largos = df_all[~df_all["is_short"]]["id"].count()
-        st.markdown(f"**Total largos detectados:** {total_largos} (esperado: 43)")
-
-        # Mostrar los largos de "Solo" para identificar el intruso
-        solo_largos = df_all[(~df_all["is_short"]) & (df_all["guest"] == "Solo (sin invitado)")].copy()
-        solo_largos = solo_largos[["title","duration_min","views","published_at"]].sort_values("published_at")
-        solo_largos.columns = ["Título","Duración (min)","Vistas","Publicado"]
-        solo_largos["Publicado"] = solo_largos["Publicado"].dt.strftime("%Y-%m-%d")
-        with st.expander(f"Ver los {len(solo_largos)} largos de 'Solo (sin invitado)' — identificar el intruso"):
-            st.dataframe(solo_largos, use_container_width=True, hide_index=True)
 
         st.divider()
         st.markdown("### Resumen de clasificación")
@@ -977,8 +1293,9 @@ with tab7:
 
         resumen_guest = df_all.groupby("guest").agg(
             Videos=("id","count"),
-            Shorts=("is_short","sum"),
-            Largos=("is_short", lambda x: (~x).sum()),
+            Shorts=("tipo", lambda x: (x=="Short").sum()),
+            Medianos=("tipo", lambda x: (x=="Mediano").sum()),
+            Completos=("tipo", lambda x: (x=="Completo").sum()),
             Vistas=("views","sum"),
         ).reset_index().sort_values("Videos", ascending=False)
         col_b.dataframe(resumen_guest, use_container_width=True, hide_index=True)
