@@ -2,6 +2,7 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
+import numpy as np
 from datetime import date, timedelta
 
 from auth import authenticate, get_youtube, get_analytics
@@ -597,9 +598,15 @@ with tab5:
                 consist, x="videos", y="vistas", text="month",
                 title="Videos publicados por mes vs. vistas totales de ese mes",
                 labels={"videos": "Videos publicados", "vistas": "Vistas del mes"},
-                trendline="ols",
             )
             fig_cons.update_traces(textposition="top center")
+            if consist["videos"].nunique() >= 2:
+                coef = np.polyfit(consist["videos"], consist["vistas"], 1)
+                x_range = np.linspace(consist["videos"].min(), consist["videos"].max(), 50)
+                fig_cons.add_trace(go.Scatter(
+                    x=x_range, y=coef[0] * x_range + coef[1],
+                    mode="lines", name="Tendencia", line=dict(color="gray", dash="dash"),
+                ))
             st.plotly_chart(fig_cons, use_container_width=True)
 
     # Analytics diarias del canal

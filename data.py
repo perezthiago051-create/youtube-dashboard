@@ -48,11 +48,17 @@ HANDLE_DISPLAY_NAMES = {
 # Sección de la descripción donde YouTube siempre pone el Instagram del invitado
 # (presente en los Capítulos Completos)
 _GUEST_SECTION_RE = re.compile(r"sobre el invitado[:\s]*(.*?)(?:⸻|sobre el podcast|$)", re.IGNORECASE | re.DOTALL)
-_HANDLE_RE = re.compile(r"instagram\s*:?\s*[/@]*\s*([a-z0-9_.]+)", re.IGNORECASE)
+# Soporta "Instagram: @handle", "Instagram: / handle" o
+# "Instagram: https://www.instagram.com/handle"
+_HANDLE_RE = re.compile(
+    r"instagram\s*:?\s*(?:https?://)?(?:www\.)?(?:instagram\.com/)?[/@]?\s*([a-z0-9_.]+)",
+    re.IGNORECASE,
+)
 
 # Mención @handle en el primer párrafo (presente en Shorts/Medianos, que no
-# tienen la sección "SOBRE EL INVITADO")
-_MENTION_RE = re.compile(r"@([a-z0-9_.]+)", re.IGNORECASE)
+# tienen la sección "SOBRE EL INVITADO"). El lookbehind evita matchear el "@"
+# de un email de contacto (ej. "...podcast@gmail.com").
+_MENTION_RE = re.compile(r"(?<![\w@.])@([a-z0-9_.]+)", re.IGNORECASE)
 _PRIMER_PARRAFO_LEN = 600
 
 # ── Umbrales de clasificación de formato (en segundos) ─────────────────────────
