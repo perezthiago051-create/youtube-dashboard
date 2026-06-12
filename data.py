@@ -46,8 +46,14 @@ HANDLE_DISPLAY_NAMES = {
 }
 
 # Sección de la descripción donde YouTube siempre pone el Instagram del invitado
+# (presente en los Capítulos Completos)
 _GUEST_SECTION_RE = re.compile(r"sobre el invitado[:\s]*(.*?)(?:⸻|sobre el podcast|$)", re.IGNORECASE | re.DOTALL)
 _HANDLE_RE = re.compile(r"instagram\s*:?\s*[/@]*\s*([a-z0-9_.]+)", re.IGNORECASE)
+
+# Mención @handle en el primer párrafo (presente en Shorts/Medianos, que no
+# tienen la sección "SOBRE EL INVITADO")
+_MENTION_RE = re.compile(r"@([a-z0-9_.]+)", re.IGNORECASE)
+_PRIMER_PARRAFO_LEN = 600
 
 # ── Umbrales de clasificación de formato (en segundos) ─────────────────────────
 SHORT_MAX_SEC   = 70      # <= 70s (o con #shorts) => Short
@@ -99,13 +105,15 @@ def classify_video_type(video: dict) -> str:
 def extract_guest(title: str, description: str = "") -> str:
     """Detecta al invitado automáticamente.
 
-    1) Busca la sección "SOBRE EL INVITADO" de la descripción (siempre presente
-       cuando hay invitado) y extrae su handle de Instagram. Si el handle tiene
+    1) Busca la sección "SOBRE EL INVITADO" de la descripción (presente en los
+       Capítulos Completos) y extrae su handle de Instagram. Si el handle tiene
        un nombre lindo asignado en HANDLE_DISPLAY_NAMES lo usa, sino muestra
        "@handle" directamente -> nunca se mezcla con "Solo (sin invitado)",
        aunque sea un invitado nuevo que todavía no fue mapeado a mano.
-    2) Si esa sección no existe (videos viejos con otro formato), cae al
-       GUEST_MAP por palabras clave como respaldo.
+    2) Si esa sección no existe (Shorts/Medianos), el invitado siempre se
+       menciona en el primer párrafo: busca ahí una @mención, o el nombre
+       de algún invitado ya conocido (HANDLE_DISPLAY_NAMES).
+    3) Como último respaldo, usa GUEST_MAP por palabras clave (videos viejos).
     """
     desc = description or ""
 
@@ -116,6 +124,17 @@ def extract_guest(title: str, description: str = "") -> str:
             handle = handle_match.group(1).strip(".").lower()
             if handle and handle not in _CANAL_HANDLES:
                 return HANDLE_DISPLAY_NAMES.get(handle, f"@{handle}")
+
+    primer_parrafo = desc[:_PRIMER_PARRAFO_LEN]
+
+    for mention in _MENTION_RE.findall(primer_parrafo):
+        handle = mention.strip(".").lower()
+        if handle and handle not in _CANAL_HANDLES:
+            return HANDLE_DISPLAY_NAMES.get(handle, f"@{handle}")
+
+    for handle, display in HANDLE_DISPLAY_NAMES.items():
+        if re.search(r"\b" + re.escape(display.lower()) + r"\b", primer_parrafo.lower()):
+            return display
 
     text = (title + " " + desc).lower()
     for guest_name, keywords in GUEST_MAP.items():
