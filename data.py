@@ -61,8 +61,40 @@ _HANDLE_RE = re.compile(
 _MENTION_RE = re.compile(r"(?<![\w@.])@([a-z0-9_.]+)", re.IGNORECASE)
 _PRIMER_PARRAFO_LEN = 600
 
+# Fragmentos sueltos de URLs que a veces queda "pegados" al parsear el link de
+# Instagram (ej. "instagram.com" sin handle) -> no son nombres de invitados.
+_HANDLES_INVALIDOS = {
+    "com", "co", "ar", "net", "org", "www", "http", "https",
+    "instagram", "tiktok", "youtube", "html", "link", "page",
+}
+
+
+def _resolve_handle(raw_handle: str):
+    """Limpia y mapea un handle extraído a un nombre de invitado.
+
+    Devuelve None si el handle es inválido (resto de URL, handle del propio
+    canal, etc.) para que el llamador siga probando otras estrategias.
+    Si el handle "contiene" o "está contenido" en uno ya conocido en
+    HANDLE_DISPLAY_NAMES (ej. "silviavales.consultora" vs "silviavales"),
+    se usa el nombre lindo ya asignado -> evita duplicados del mismo invitado.
+    """
+    handle = (raw_handle or "").strip(".").lower()
+    if not handle or handle in _HANDLES_INVALIDOS or handle in _CANAL_HANDLES:
+        return None
+
+    if handle in HANDLE_DISPLAY_NAMES:
+        return HANDLE_DISPLAY_NAMES[handle]
+
+    for known_handle, display in HANDLE_DISPLAY_NAMES.items():
+        if handle.startswith(known_handle) or known_handle.startswith(handle):
+            return display
+
+    return f"@{handle}"
+
+
 # ── Umbrales de clasificación de formato (en segundos) ─────────────────────────
-SHORT_MAX_SEC   = 70      # <= 70s (o con #shorts) => Short
+SHORT_MAX_SEC   = 70      # <= 70s (o con #shorts, si dura poco) => Short
+SHORT_HASHTAG_MAX_SEC = 180  # el hashtag #shorts solo cuenta hasta 3 min
 COMPLETO_MIN_SEC = 3600   # > 60 min => Completo (capítulo entero)
 # Entre SHORT_MAX_SEC y COMPLETO_MIN_SEC => Mediano (clips de 3-25 min típicamente)
 
@@ -98,9 +130,10 @@ def classify_video_type(video: dict) -> str:
     if dur <= SHORT_MAX_SEC:
         return "Short"
 
-    text = (sn.get("title", "") + sn.get("description", "")[:300]).lower()
-    if "#short" in text:
-        return "Short"
+    if dur <= SHORT_HASHTAG_MAX_SEC:
+        text = (sn.get("title", "") + sn.get("description", "")[:300]).lower()
+        if "#short" in text:
+            return "Short"
 
     if dur > COMPLETO_MIN_SEC:
         return "Completo"
@@ -127,16 +160,16 @@ def extract_guest(title: str, description: str = "") -> str:
     if section_match:
         handle_match = _HANDLE_RE.search(section_match.group(1))
         if handle_match:
-            handle = handle_match.group(1).strip(".").lower()
-            if handle and handle not in _CANAL_HANDLES:
-                return HANDLE_DISPLAY_NAMES.get(handle, f"@{handle}")
+            resolved = _resolve_handle(handle_match.group(1))
+            if resolved:
+                return resolved
 
     primer_parrafo = desc[:_PRIMER_PARRAFO_LEN]
 
     for mention in _MENTION_RE.findall(primer_parrafo):
-        handle = mention.strip(".").lower()
-        if handle and handle not in _CANAL_HANDLES:
-            return HANDLE_DISPLAY_NAMES.get(handle, f"@{handle}")
+        resolved = _resolve_handle(mention)
+        if resolved:
+            return resolved
 
     for handle, display in HANDLE_DISPLAY_NAMES.items():
         if re.search(r"\b" + re.escape(display.lower()) + r"\b", primer_parrafo.lower()):
